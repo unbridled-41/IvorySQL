@@ -1,11 +1,13 @@
 -- DBA_OBJECTS / ALL_OBJECTS / USER_OBJECTS
 SET IVORYSQL.COMPATIBLE_MODE TO ORACLE;
 SET IVORYSQL.IDENTIFIER_CASE_SWITCH = INTERCHANGE;
+
 --
 -- Oracle-compatible object catalog views.  OBJECT_TYPE mapping across the
 -- underlying catalogs, the DBA/ALL/USER visibility ladder, and the rule
 -- that built-in scalar types are not listed.
 --
+
 CREATE TABLE OBJECTS_T (ID INT);
 CREATE VIEW OBJECTS_V AS SELECT * FROM OBJECTS_T;
 CREATE MATERIALIZED VIEW OBJECTS_MV AS SELECT * FROM OBJECTS_T;
@@ -40,6 +42,7 @@ CREATE PACKAGE BODY OBJECTS_PKG AS
 	END;
 END;
 /
+
 -- DBA_OBJECTS sees every object type, independent of privileges
 SELECT OBJECT_NAME, OBJECT_TYPE
 FROM DBA_OBJECTS
@@ -58,6 +61,7 @@ ORDER BY OBJECT_TYPE, OBJECT_NAME;
  OBJECTS_V   | VIEW
 (9 rows)
 
+
 -- OBJECT_ID / NAMESPACE are catalog oids, STATUS is VALID, no DDL times
 SELECT OBJECT_ID IS NOT NULL AS has_oid,
        NAMESPACE IS NOT NULL AS has_namespace,
@@ -70,6 +74,7 @@ WHERE OBJECT_NAME = 'OBJECTS_T';
 ---------+---------------+--------+-----------+-----------+-----------+--------------
  t       | t             | VALID  | N         | N         | N         | t
 (1 row)
+
 
 -- ALL_OBJECTS without grants: only objects PostgreSQL makes PUBLIC-visible
 -- (functions/procedures/packages/types carry default PUBLIC EXECUTE/USAGE;
@@ -85,6 +90,7 @@ ORDER BY OBJECT_TYPE, OBJECT_NAME;
  OBJECTS_F   | FUNCTION
  OBJECTS_P   | PROCEDURE
 (2 rows)
+
 
 -- with SELECT on the table, the table (and its trigger) become visible
 RESET ROLE;
@@ -102,6 +108,7 @@ ORDER BY OBJECT_TYPE, OBJECT_NAME;
  OBJECTS_TRG | TRIGGER
 (4 rows)
 
+
 -- USER_OBJECTS under the viewer role only lists the viewer's own objects
 SELECT COUNT(*) AS user_objects_of_viewer
 FROM USER_OBJECTS
@@ -112,6 +119,7 @@ WHERE OBJECT_NAME LIKE 'OBJECTS\_%' ESCAPE '\';
 (1 row)
 
 RESET ROLE;
+
 -- owner sees everything through ALL_/USER_
 SELECT COUNT(*) AS user_objects_of_owner
 FROM USER_OBJECTS
@@ -129,6 +137,7 @@ WHERE OBJECT_NAME LIKE 'OBJECTS\_%' ESCAPE '\';
                     9
 (1 row)
 
+
 -- built-in scalar types of the sys namespace are not listed
 SELECT COUNT(*) AS builtin_types_listed
 FROM DBA_OBJECTS
@@ -138,6 +147,34 @@ WHERE OBJECT_TYPE = 'TYPE'
 ----------------------
                     0
 (1 row)
+
+
+-- a partitioned table appears once as TABLE; partition children are not
+-- separate objects (Oracle does not list partitions in DBA_OBJECTS either)
+CREATE TABLE OBJECTS_PT (ID INT) PARTITION BY RANGE (ID);
+CREATE TABLE OBJECTS_PT_P1 PARTITION OF OBJECTS_PT FOR VALUES FROM (0) TO (100);
+
+SELECT OBJECT_NAME, OBJECT_TYPE
+FROM DBA_OBJECTS
+WHERE OBJECT_NAME LIKE 'OBJECTS\_PT%' ESCAPE '\'
+ORDER BY OBJECT_NAME;
+ object_name | object_type 
+-------------+-------------
+ OBJECTS_PT  | TABLE
+(1 row)
+
+
+-- aggregates surface as AGGREGATE (sys.stragg ships with the extension)
+SELECT COUNT(*) AS stragg_listed
+FROM DBA_OBJECTS
+WHERE OBJECT_NAME = 'STRAGG' AND OBJECT_TYPE = 'AGGREGATE';
+ stragg_listed 
+---------------
+             1
+(1 row)
+
+
+DROP TABLE OBJECTS_PT;
 
 DROP PACKAGE BODY OBJECTS_PKG;
 DROP PACKAGE OBJECTS_PKG;
