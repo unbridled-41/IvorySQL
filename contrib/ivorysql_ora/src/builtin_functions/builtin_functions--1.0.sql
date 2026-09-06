@@ -1183,6 +1183,78 @@ STRICT
 PARALLEL SAFE
 IMMUTABLE;
 
+/*
+ * BIT_AND_AGG / BIT_OR_AGG / BIT_XOR_AGG
+ *
+ * Oracle-compatible bitwise aggregates (Oracle 21c+).  They operate on the
+ * two's-complement representation of the argument, truncate fractional
+ * input toward zero, ignore NULL inputs, and return 0 (not NULL) when no
+ * non-NULL value was aggregated.  The return type is always number.
+ */
+CREATE FUNCTION sys.bit_and_agg_transfn(internal, number)
+RETURNS internal
+AS 'MODULE_PATHNAME', 'bit_and_agg_transfn'
+LANGUAGE C
+IMMUTABLE
+PARALLEL SAFE;
+
+CREATE FUNCTION sys.bit_or_agg_transfn(internal, number)
+RETURNS internal
+AS 'MODULE_PATHNAME', 'bit_or_agg_transfn'
+LANGUAGE C
+IMMUTABLE
+PARALLEL SAFE;
+
+CREATE FUNCTION sys.bit_xor_agg_transfn(internal, number)
+RETURNS internal
+AS 'MODULE_PATHNAME', 'bit_xor_agg_transfn'
+LANGUAGE C
+IMMUTABLE
+PARALLEL SAFE;
+
+CREATE FUNCTION sys.bit_and_agg_finalfn(internal)
+RETURNS number
+AS 'MODULE_PATHNAME', 'bit_and_agg_finalfn'
+LANGUAGE C
+IMMUTABLE
+PARALLEL SAFE;
+
+CREATE FUNCTION sys.bit_or_agg_finalfn(internal)
+RETURNS number
+AS 'MODULE_PATHNAME', 'bit_or_agg_finalfn'
+LANGUAGE C
+IMMUTABLE
+PARALLEL SAFE;
+
+CREATE FUNCTION sys.bit_xor_agg_finalfn(internal)
+RETURNS number
+AS 'MODULE_PATHNAME', 'bit_xor_agg_finalfn'
+LANGUAGE C
+IMMUTABLE
+PARALLEL SAFE;
+
+CREATE AGGREGATE sys.bit_and_agg(number) (
+	SFUNC = sys.bit_and_agg_transfn,
+	STYPE = internal,
+	FINALFUNC = sys.bit_and_agg_finalfn,
+	PARALLEL = SAFE
+);
+
+CREATE AGGREGATE sys.bit_or_agg(number) (
+	SFUNC = sys.bit_or_agg_transfn,
+	STYPE = internal,
+	FINALFUNC = sys.bit_or_agg_finalfn,
+	PARALLEL = SAFE
+);
+
+CREATE AGGREGATE sys.bit_xor_agg(number) (
+	SFUNC = sys.bit_xor_agg_transfn,
+	STYPE = internal,
+	FINALFUNC = sys.bit_xor_agg_finalfn,
+	PARALLEL = SAFE
+);
+/* End - BIT_AND_AGG/BIT_OR_AGG/BIT_XOR_AGG */
+
 CREATE FUNCTION sys.nanvl(number, number)
 RETURNS number
 AS 'MODULE_PATHNAME','number_nanvl'

@@ -1,0 +1,69 @@
+--
+-- BIT_AND_AGG / BIT_OR_AGG / BIT_XOR_AGG
+--
+-- Oracle-compatible bitwise aggregates (Oracle 21c+).  Operate on the
+-- two's-complement representation of the argument, truncate fractional
+-- input toward zero, ignore NULL inputs, and return 0 (not NULL) over no
+-- non-NULL input.  Return type is always number.
+--
+-- Every expected value below was verified against Oracle 23ai Free.
+--
+
+CREATE TABLE bit_agg_test (g int, v int);
+INSERT INTO bit_agg_test VALUES (1, 6);
+INSERT INTO bit_agg_test VALUES (1, 3);
+INSERT INTO bit_agg_test VALUES (1, NULL);
+INSERT INTO bit_agg_test VALUES (2, 7);
+INSERT INTO bit_agg_test VALUES (2, 14);
+
+-- basic aggregation, NULL ignored (Oracle: 2/7/5 and 6/15/9)
+SELECT g, bit_and_agg(v) AS a, bit_or_agg(v) AS o, bit_xor_agg(v) AS x
+FROM bit_agg_test GROUP BY g ORDER BY g;
+
+-- single values pass through
+SELECT bit_and_agg(6) AS a, bit_or_agg(3) AS o, bit_xor_agg(3) AS x;
+
+-- no non-NULL input yields 0 (Oracle returns 0, not NULL)
+SELECT bit_and_agg(v) AS a, bit_or_agg(v) AS o, bit_xor_agg(v) AS x
+FROM bit_agg_test WHERE g > 99;
+SELECT bit_and_agg(NULL) AS a, bit_or_agg(NULL) AS o, bit_xor_agg(NULL) AS x;
+
+-- fractional input is truncated toward zero (Oracle: 2 / 3 / -2 / -2 / 2)
+SELECT bit_and_agg(2.7) AS a, bit_and_agg(3.1) AS b, bit_and_agg(-2.5) AS c,
+       bit_and_agg(-2.7) AS d, bit_or_agg(2.7) AS e;
+
+-- negative values follow two's-complement semantics (Oracle: 6 / -10 / -16)
+SELECT bit_and_agg(v) AS a, bit_or_agg(v) AS o, bit_xor_agg(v) AS x
+FROM (SELECT -10 AS v UNION ALL SELECT 6) t;
+
+-- DISTINCT is supported (Oracle: 7)
+SELECT bit_or_agg(DISTINCT v) AS o FROM bit_agg_test WHERE g = 1;
+
+-- window usage (Oracle: 6 for both rows of g = 2)
+SELECT v, bit_and_agg(v) OVER (PARTITION BY g) AS a
+FROM bit_agg_test WHERE g = 2 ORDER BY v;
+
+-- values beyond 64 bits are exact (Oracle: 2^100 + 5)
+SELECT to_char(bit_or_agg(v)) AS large_or
+FROM (SELECT 1267650600228229401496703205376::number AS v
+      UNION ALL SELECT 5) t;
+
+-- large pairwise AND (Oracle: 2^100 + 1)
+SELECT to_char(bit_and_agg(v)) AS large_and
+FROM (SELECT 1267650600228229401496703205379::number AS v
+      UNION ALL SELECT 1267650600228229401496703205377::number) t;
+
+-- large negative mixed-sign results (Oracle: 2^100 / -2^100 / -2^101)
+SELECT to_char(bit_and_agg(v)) AS a, to_char(bit_or_agg(v)) AS o, to_char(bit_xor_agg(v)) AS x
+FROM (SELECT -1267650600228229401496703205376::number AS v
+      UNION ALL SELECT 1267650600228229401496703205376::number) t;
+
+-- number(38) boundary values stay exact (2^126 | 2^125, 2^126 ^ 2^125)
+SELECT to_char(bit_or_agg(v)) AS o, to_char(bit_xor_agg(v)) AS x
+FROM (SELECT 85070591730234615865843651857942052864::number AS v
+      UNION ALL SELECT 42535295865117307932921825928971026432::number) t;
+
+-- implicit conversion from text input (Oracle: 6)
+SELECT bit_and_agg('6') AS a;
+
+DROP TABLE bit_agg_test;

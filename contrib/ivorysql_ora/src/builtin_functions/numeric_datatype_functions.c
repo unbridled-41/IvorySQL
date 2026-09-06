@@ -47,6 +47,195 @@ PG_FUNCTION_INFO_V1(binary_float_nanvl);
 PG_FUNCTION_INFO_V1(binary_double_nanvl);
 PG_FUNCTION_INFO_V1(ora_to_binary_float);
 PG_FUNCTION_INFO_V1(ora_to_binary_double);
+PG_FUNCTION_INFO_V1(bit_and_agg_transfn);
+PG_FUNCTION_INFO_V1(bit_or_agg_transfn);
+PG_FUNCTION_INFO_V1(bit_xor_agg_transfn);
+PG_FUNCTION_INFO_V1(bit_and_agg_finalfn);
+PG_FUNCTION_INFO_V1(bit_or_agg_finalfn);
+PG_FUNCTION_INFO_V1(bit_xor_agg_finalfn);
+
+
+/*
+ * Oracle-compatible BIT_AND_AGG / BIT_OR_AGG / BIT_XOR_AGG aggregates.
+ *
+ * Oracle operates on the two's-complement representation of the argument,
+ * truncating fractional input toward zero.  On Oracle 23ai the accumulator
+ * behaves as a 128-bit two's-complement integer: values within the 128-bit
+ * range are exact (including negative operands), inputs beyond it wrap, and
+ * an aggregate over no non-NULL input yields 0 (not NULL).  NULL inputs are
+ * ignored, the return type is always NUMBER, and DISTINCT / window usage
+ * follow from the regular PostgreSQL aggregate machinery.
+ *
+ * The accumulator is kept as an unsigned 128-bit value so that both the
+ * digit accumulation of out-of-range inputs and the two's-complement
+ * negation wrap naturally.  On platforms without a 128-bit integer type the
+ * accumulator degrades to 64 bits.
+ */
+#ifdef HAVE_INT128
+typedef unsigned __int128 ora_uint128;
+#else
+typedef uint64 ora_uint128;
+#endif
+
+typedef struct BitAggState
+{
+	ora_uint128 bits;			/* two's-complement accumulator */
+	bool		have_input;		/* seen at least one non-NULL input */
+} BitAggState;
+
+/*
+ * Convert a NUMBER to its two's-complement bit pattern.  Fractional values
+ * are truncated toward zero (Oracle: BIT_AND_AGG(2.7) = 2, (-2.5) = -2).
+ */
+static ora_uint128
+numeric_two_complement_bits(Numeric num)
+{
+	char	   *str = DatumGetCString(DirectFunctionCall1(numeric_out,
+														   NumericGetDatum(num)));
+	const char *s = str;
+	bool		neg = false;
+	ora_uint128 acc = 0;
+
+	if (*s == '-')
+	{
+		neg = true;
+		s++;
+	}
+	else if (*s == '+')
+		s++;
+
+	/* integer digits only; stops at '.' or the end of the decimal string */
+	for (; *s >= '0' && *s <= '9'; s++)
+		acc = acc * (ora_uint128) 10 + (ora_uint128) (*s - '0');
+
+	pfree(str);
+
+	/* negation in two's complement wraps modulo 2^(8*sizeof(ora_uint128)) */
+	return neg ? (ora_uint128) 0 - acc : acc;
+}
+
+/* Convert the accumulator's two's-complement bits back to a NUMBER. */
+static Numeric
+bits_to_numeric(ora_uint128 bits)
+{
+	char		buf[64];
+	char	   *p = buf + sizeof(buf) - 1;
+	bool		neg = ((bits >> (sizeof(ora_uint128) * 8 - 1)) != 0);
+	ora_uint128 mag;
+
+	*p = '\0';
+	mag = neg ? (ora_uint128) 0 - bits : bits;
+	do
+	{
+		*--p = '0' + (char) (mag % (ora_uint128) 10);
+		mag /= (ora_uint128) 10;
+	} while (mag != 0);
+	if (neg)
+		*--p = '-';
+
+	return DatumGetNumeric(DirectFunctionCall3(numeric_in,
+											   CStringGetDatum(p),
+											   ObjectIdGetDatum(InvalidOid),
+											   Int32GetDatum(-1)));
+}
+
+static Datum
+bit_agg_transfn(PG_FUNCTION_ARGS, ora_uint128 seed, ora_uint128 (*op) (ora_uint128, ora_uint128))
+{
+	MemoryContext aggcontext;
+	BitAggState *state;
+
+	if (!AggCheckCallContext(fcinfo, &aggcontext))
+		elog(ERROR, "bit agg transition function called in non-aggregate context");
+
+	if (PG_ARGISNULL(0))
+	{
+		MemoryContext oldcontext = MemoryContextSwitchTo(aggcontext);
+
+		state = (BitAggState *) palloc(sizeof(BitAggState));
+		state->bits = seed;
+		state->have_input = false;
+		MemoryContextSwitchTo(oldcontext);
+	}
+	else
+		state = (BitAggState *) PG_GETARG_POINTER(0);
+
+	if (!PG_ARGISNULL(1))
+	{
+		Numeric		num = PG_GETARG_NUMERIC(1);
+
+		state->bits = op(state->bits, numeric_two_complement_bits(num));
+		state->have_input = true;
+	}
+
+	PG_RETURN_POINTER(state);
+}
+
+static ora_uint128
+bit_op_and(ora_uint128 a, ora_uint128 b)
+{
+	return a & b;
+}
+
+static ora_uint128
+bit_op_or(ora_uint128 a, ora_uint128 b)
+{
+	return a | b;
+}
+
+static ora_uint128
+bit_op_xor(ora_uint128 a, ora_uint128 b)
+{
+	return a ^ b;
+}
+
+static Datum
+bit_agg_finalfn_int(PG_FUNCTION_ARGS)
+{
+	BitAggState *state = PG_ARGISNULL(0) ? NULL : (BitAggState *) PG_GETARG_POINTER(0);
+
+	/* Oracle yields 0 (not NULL) when no non-NULL input was aggregated */
+	if (state == NULL || !state->have_input)
+		return PointerGetDatum(bits_to_numeric(0));
+
+	PG_RETURN_NUMERIC(bits_to_numeric(state->bits));
+}
+
+Datum
+bit_and_agg_transfn(PG_FUNCTION_ARGS)
+{
+	return bit_agg_transfn(fcinfo, ~(ora_uint128) 0, bit_op_and);
+}
+
+Datum
+bit_or_agg_transfn(PG_FUNCTION_ARGS)
+{
+	return bit_agg_transfn(fcinfo, (ora_uint128) 0, bit_op_or);
+}
+
+Datum
+bit_xor_agg_transfn(PG_FUNCTION_ARGS)
+{
+	return bit_agg_transfn(fcinfo, (ora_uint128) 0, bit_op_xor);
+}
+
+Datum
+bit_and_agg_finalfn(PG_FUNCTION_ARGS)
+{
+	return bit_agg_finalfn_int(fcinfo);
+}
+
+Datum
+bit_or_agg_finalfn(PG_FUNCTION_ARGS)
+{
+	return bit_agg_finalfn_int(fcinfo);
+}
+
+Datum
+bit_xor_agg_finalfn(PG_FUNCTION_ARGS)
+{
+	return bit_agg_finalfn_int(fcinfo);
+}
 
 
 Datum
