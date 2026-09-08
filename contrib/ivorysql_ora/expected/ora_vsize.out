@@ -140,6 +140,69 @@ SELECT vsize(0.05::number);
      2
 (1 row)
 
+-- base-100 mantissa byte boundaries sit at the decimal point: 1.5 is the
+-- mantissa byte pair 1,50, so an odd significant digit count on either side
+-- of the point adds a mantissa byte (values verified on Oracle 23ai)
+SELECT vsize(1.5);
+ vsize 
+-------
+     3
+(1 row)
+
+SELECT vsize(1.500);
+ vsize 
+-------
+     3
+(1 row)
+
+SELECT vsize(1.5::number);
+ vsize 
+-------
+     3
+(1 row)
+
+SELECT vsize(1.500::number);
+ vsize 
+-------
+     3
+(1 row)
+
+SELECT vsize(-1.5);
+ vsize 
+-------
+     4
+(1 row)
+
+SELECT vsize(-1.500::number);
+ vsize 
+-------
+     4
+(1 row)
+
+SELECT vsize(12.5);
+ vsize 
+-------
+     3
+(1 row)
+
+SELECT vsize(123.5);
+ vsize 
+-------
+     4
+(1 row)
+
+SELECT vsize(-123.5);
+ vsize 
+-------
+     5
+(1 row)
+
+SELECT vsize(1.005::number);
+ vsize 
+-------
+     4
+(1 row)
+
 SELECT vsize(123::int2);
  vsize 
 -------
@@ -156,6 +219,43 @@ SELECT vsize(123::int8);
  vsize 
 -------
      3
+(1 row)
+
+-- a domain over number/numeric resolves to its base type
+CREATE DOMAIN vsize_number_dom AS number;
+SELECT vsize(1.5::vsize_number_dom);
+ vsize 
+-------
+     3
+(1 row)
+
+SELECT vsize(100::vsize_number_dom);
+ vsize 
+-------
+     2
+(1 row)
+
+CREATE DOMAIN vsize_numeric_dom AS numeric;
+SELECT vsize(-1.5::vsize_numeric_dom);
+ vsize 
+-------
+     4
+(1 row)
+
+SELECT vsize(3.14::vsize_numeric_dom);
+ vsize 
+-------
+     3
+(1 row)
+
+DROP DOMAIN vsize_number_dom;
+DROP DOMAIN vsize_numeric_dom;
+-- non-finite numeric has no Oracle NUMBER equivalent, so the storage size
+-- of the value is reported
+SELECT vsize('NaN'::number);
+ vsize 
+-------
+     2
 (1 row)
 
 SELECT vsize(1.23::float8);

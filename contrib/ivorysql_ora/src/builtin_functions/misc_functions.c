@@ -48,11 +48,18 @@ PG_FUNCTION_INFO_V1(ora_vsize);
  * ora_number_vsize
  *
  * Return the size of a numeric value in Oracle's internal NUMBER format:
- * one exponent byte, one mantissa byte per two significant decimal digits
- * (trailing all-zero mantissa bytes are dropped), plus one terminator
- * byte for negative values.  Zero is a single byte.  Note that only
- * whole all-zero digit pairs are dropped: VSIZE(100) is 2 while
- * VSIZE(1.50) is 3, matching Oracle.
+ * one exponent byte, one mantissa byte per two significant base-100 digits,
+ * plus one terminator byte for negative values.  Zero is a single byte.
+ * Trailing all-zero mantissa bytes are dropped, but only whole bytes:
+ * VSIZE(100) is 2 while VSIZE(1.50) is 3, matching Oracle.
+ *
+ * The mantissa's base-100 byte boundaries are anchored at the decimal
+ * point: the integer digits are grouped right to left (an odd count leaves
+ * a leading one-digit group) and the fractional digits are grouped left to
+ * right, padded with a trailing zero when their count is odd.  Grouping
+ * the concatenated digits without that boundary would be wrong; e.g. 1.5
+ * is the two mantissa bytes 1 and 50, so VSIZE(1.5) is 3 even though the
+ * value has only two significant decimal digits.
  *
  * The input is the plain decimal rendering of the value ("123.4500").
  * Returns -1 if the string is not a plain decimal number, so that the
@@ -62,8 +69,12 @@ static int32
 ora_number_vsize(const char *numstr)
 {
 	const char *cp;
-	const char *digits;
-	int			ndigits;
+	const char *intdigits;
+	const char *fracdigits;
+	const char *dot = NULL;
+	int			intlen;
+	int			fraclen;
+	int			mantbytes;
 	bool		negative = false;
 	bool		saw_nonzero = false;
 
@@ -71,39 +82,90 @@ ora_number_vsize(const char *numstr)
 	if (*cp == '+' || *cp == '-')
 		negative = (*cp++ == '-');
 
-	digits = NULL;
-	ndigits = 0;
+	intdigits = NULL;
+	fracdigits = NULL;
+	intlen = 0;
+	fraclen = 0;
 	for (; *cp; cp++)
 	{
 		if (*cp >= '0' && *cp <= '9')
 		{
-			if (digits == NULL)
-				digits = cp;
-			ndigits++;
+			if (dot == NULL)
+			{
+				if (intdigits == NULL)
+					intdigits = cp;
+				intlen++;
+			}
+			else
+			{
+				if (fracdigits == NULL)
+					fracdigits = cp;
+				fraclen++;
+			}
 
 			if (*cp != '0')
 				saw_nonzero = true;
 		}
-		else if (*cp != '.')
+		else if (*cp == '.' && dot == NULL)
+			dot = cp;
+		else
 			return -1;
 	}
 
-	if (digits == NULL || !saw_nonzero)
+	if ((intdigits == NULL && fracdigits == NULL) || !saw_nonzero)
 		return 1;				/* zero */
 
-	/* drop leading zero digits */
-	while (*digits == '0')
+	/* drop leading zero digits of the integer part */
+	while (intlen > 0 && *intdigits == '0')
 	{
-		digits++;
-		ndigits--;
+		intdigits++;
+		intlen--;
 	}
 
-	/* drop trailing zero digits two at a time (whole mantissa bytes) */
-	while (ndigits >= 2 &&
-		   digits[ndigits - 1] == '0' && digits[ndigits - 2] == '0')
-		ndigits -= 2;
+	/* drop trailing zero digits of the fractional part */
+	while (fraclen > 0 && fracdigits[fraclen - 1] == '0')
+		fraclen--;
 
-	return 1 + (ndigits + 1) / 2 + (negative ? 1 : 0);
+	/*
+	 * Count the mantissa bytes.  The digit pairs are aligned on the decimal
+	 * point, so an odd integer digit count leaves a leading one-digit group.
+	 * With no fractional part, trailing integer zero pairs form all-zero
+	 * mantissa bytes that Oracle does not store.  With an integer part,
+	 * leading fractional zero pairs are significant interior bytes (e.g.
+	 * 1.005 stores 1,00,50), but without an integer part they are not.
+	 * An odd fractional digit count is zero-padded on the right, so 1.5
+	 * yields the same 50 byte as 1.50.
+	 */
+	mantbytes = 0;
+	if (intlen > 0)
+	{
+		mantbytes = (intlen + 1) / 2;
+
+		if (fraclen == 0)
+		{
+			int			tz = 0;
+
+			while (tz < intlen && intdigits[intlen - 1 - tz] == '0')
+				tz++;
+			mantbytes -= tz / 2;
+		}
+	}
+
+	if (fraclen > 0)
+	{
+		mantbytes += (fraclen + 1) / 2;
+
+		if (intlen == 0)
+		{
+			int			lz = 0;
+
+			while (lz < fraclen && fracdigits[lz] == '0')
+				lz++;
+			mantbytes -= lz / 2;
+		}
+	}
+
+	return 1 + mantbytes + (negative ? 1 : 0);
 }
 
 /*
